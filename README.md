@@ -1,38 +1,45 @@
 # TopK Networks
 
-A simple collection of neural networks that use differentiable top‑k operations. This repository stores a few model variants for experimentation. The common top‑k routine is provided as the `DifferentiableTopK` class which can be reused across models.
-
-## Repository Layout
-
-- `topknets/` – Python package containing the model code.
-- `plots/` – directory for figures or training curves (currently empty).
-
-## Example Usage
+A collection of neural networks that take advantage of a differentiable top-K selection strategy. The common top‑k routine is provided as the `DifferentiableTopK` class which is reused across models.
 
 ```python
-import torch
-from topknets import TopKDynamicModel, TopKAttentionModel, DifferentiableTopK
+class DifferentiableTopK(nn.Module):
+    """ Calculate differentiable top-k selection weights """
 
-model = TopKDynamicModel(dim=128, k=96)
-input = torch.randn(2, 3, 224, 224)
-output = model(input)
-print(output.shape)
+    def __init__(self, k: int) -> None:
+        super().__init__()
+        self.k = k
+        positions = torch.arange(k).view(1, 1, k)
+        self.register_buffer("positions", positions)
 
-# direct use of the soft top-k routine
-scores = torch.randn(4, 32)
-topk = DifferentiableTopK(k=5)
-weights = topk(scores)
+    def forward(self, attn_weights: torch.Tensor, tau: float = 1.0) -> torch.Tensor:
+        """Return soft top-k weights.
+
+        Args:
+            attn_weights: tensor of shape (B, K)
+            tau: temperature controlling sharpness
+        Returns:
+            tensor of shape (B, k, K) with rows that sum to one
+        """
+        B, K = attn_weights.size()
+        ranks = torchsort.soft_rank(-attn_weights, regularization_strength=tau)
+        ranks = ranks.unsqueeze(-1)
+
+        positions = self.positions.to(attn_weights.device, attn_weights.dtype)
+        positions = positions.expand(B, 1, self.k)
+
+        soft_indicator = torch.sigmoid((positions + 0.5 - ranks) / tau) - torch.sigmoid((positions - 0.5 - ranks) / tau)
+        weights = soft_indicator.transpose(1, 2)
+        weights = weights / (weights.sum(dim=-1, keepdim=True) + 1e-8)
+        return weights
 ```
 
 ## DifferentiableTopK
 
-`DifferentiableTopK` converts a score vector into a **soft** top‑k. Given
-`attn_weights` of shape `(B, K)` it returns weights of shape `(B, k, K)` where
-each row sums to one.
+`DifferentiableTopK` converts a score vector into a **soft** top‑k matrix. Given `attn_weights` of shape `(B, N)` it returns weights of shape `(B, k, D)` where each row sums to one.
 
-The weights are computed from differentiable ranks via
-`torchsort.soft_rank`. For rank `r_j` at position `i` we use
-the smooth indicator
+The weights are computed from the differentiable ranks output by 
+`torchsort.soft_rank`. For rank `r_j` at position `i` we use the smooth indicator
 
 ```
 I(rank_j, i) = sigmoid((i + 0.5 - rank_j) / tau)
@@ -43,11 +50,10 @@ where `tau` controls how close the result is to a hard top‑k.
 
 ## Results
 
+All models trained on ImageNet
+
 | Model                | Dataset | Top-1 | Top-5 |
 |----------------------|---------|-------|-------|
 | TopKDynamicModel     | -       | -     | -     |
 | TopKAttentionModel   | -       | -     | -     |
 
-_Add your scores to the table above as you run experiments._
-
-Plots from experiments can be placed in the `plots/` directory and referenced here.

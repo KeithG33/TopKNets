@@ -46,15 +46,14 @@ class DynamicTokenBlock(nn.Module):
         x = x + self.ch_proj(x.transpose(2, 3)).transpose(2, 3)
 
         x_score, x_val = self.proj(x).split([1, self.Dh], dim=-1)
-        x_score = x_score.view(B * self.H, N)
-        x_val = x_val.view(B * self.H, N, self.Dh)
+        x_score, x_val = x_score.view(B * self.H, N), x_val.view(B * self.H, N, self.Dh)
 
         temp = self.temp.clamp(-2, 5.0).sigmoid()
-        x_weights = self.topk(x_score, temp)
+        x_weights = self.topk(x_score, temp) # (B*H, k, N)
 
-        x_gather = torch.matmul(x_weights, x_val)
-        x_scatter = torch.matmul(x_val, x_gather.transpose(1, 2))
-        x_out = torch.matmul(x_scatter.softmax(dim=-1), x_gather)
+        x_gather = torch.matmul(x_weights, x_val) # (B*H, k, Dh)
+        x_scatter = torch.matmul(x_val, x_gather.transpose(1, 2)) # (B*H, N, k)
+        x_out = torch.matmul(x_scatter.softmax(dim=-1), x_gather) # (B*H, N, Dh)
 
         x_out = x_out.view(B, self.H, N, self.Dh).transpose(1, 2)
         x_out = self.proj_out(x_out.reshape(B, N, self.D))
